@@ -71,8 +71,16 @@ App (/blast)                Server (proxy)              n8n + WAHA (VPS)
 
 1. Import file [`n8n/whatsapp-blast-waha.json`](n8n/whatsapp-blast-waha.json) ke n8n.
 2. Set environment variable di n8n: `WAHA_URL`, `WAHA_API_KEY`, `WAHA_SESSION`.
-3. Aktifkan workflow, salin URL webhook → isikan ke `N8N_WEBHOOK_URL` (atau ke
-   field webhook di halaman `/blast`).
+3. **Aktifkan** workflow (toggle "Active"), lalu salin Production Webhook URL.
+   Untuk instance `n8n.asy-syifaa.com`, URL produksinya:
+
+   ```
+   https://n8n.asy-syifaa.com/webhook/whatsapp-blast
+   ```
+
+   Isikan ke `N8N_WEBHOOK_URL` (atau ke field webhook di halaman `/blast`).
+   Catatan: URL editor (`.../workflow/<id>`) berbeda dari webhook produksi
+   (`.../webhook/whatsapp-blast`) — yang dipakai app adalah yang `/webhook/`.
 
 **Payload app → n8n:**
 
