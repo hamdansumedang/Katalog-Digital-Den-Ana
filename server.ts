@@ -9,11 +9,9 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ---- Konfigurasi WAHA + n8n ----
-const WAHA_URL = (process.env.WAHA_URL || "").replace(/\/+$/, "");
-const WAHA_API_KEY = process.env.WAHA_API_KEY || "";
-const WAHA_SESSION = process.env.WAHA_SESSION || "default";
-const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || "";
+// ---- Konfigurasi n8n (WAHA hanya diakses dari sisi n8n, internal docker) ----
+const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || ""; // webhook blast (async)
+const N8N_CHECK_WEBHOOK_URL = process.env.N8N_CHECK_WEBHOOK_URL || ""; // webhook cek nomor (sync)
 const APP_URL = (process.env.APP_URL || "").replace(/\/+$/, "");
 
 // ---- Penyimpanan job blast (in-memory) ----
@@ -65,48 +63,38 @@ async function startServer() {
     }
   });
 
-  // Cek nomor WhatsApp aktif via WAHA (GET /api/contacts/check-exists)
+  // Cek nomor WhatsApp aktif via n8n (n8n yang memanggil WAHA check-exists, sinkron)
   app.post("/api/wa/validate", async (req, res) => {
-    const { targets } = req.body as { targets?: string[] };
+    const { targets, webhookUrl } = req.body as { targets?: string[]; webhookUrl?: string };
 
     if (!Array.isArray(targets) || targets.length === 0) {
       return res.status(400).json({ status: false, msg: "targets harus berupa array nomor" });
     }
-    if (!WAHA_URL) {
+
+    const url = webhookUrl || N8N_CHECK_WEBHOOK_URL;
+    if (!url) {
       return res.status(400).json({
         status: false,
-        msg: "WAHA_URL belum dikonfigurasi di server (.env).",
+        msg: "N8N_CHECK_WEBHOOK_URL belum dikonfigurasi di server (.env).",
       });
     }
 
-    const registered: string[] = [];
-    const not_registered: string[] = [];
-    const queue = [...targets];
-
-    const worker = async () => {
-      while (queue.length) {
-        const num = queue.shift();
-        if (!num) continue;
-        try {
-          const url =
-            `${WAHA_URL}/api/contacts/check-exists` +
-            `?phone=${encodeURIComponent(num)}&session=${encodeURIComponent(WAHA_SESSION)}`;
-          const r = await fetch(url, { headers: { "X-Api-Key": WAHA_API_KEY } });
-          const d: any = await r.json().catch(() => ({}));
-          if (d && d.numberExists) registered.push(num);
-          else not_registered.push(num);
-        } catch (err) {
-          console.error("WAHA check-exists error:", num, err);
-          // biarkan nomor tetap "unknown" (tidak dimasukkan ke kedua list)
-        }
-      }
-    };
-
-    // Jalankan beberapa worker paralel agar lebih cepat
-    const concurrency = Math.min(5, targets.length);
-    await Promise.all(Array.from({ length: concurrency }, () => worker()));
-
-    res.json({ status: true, registered, not_registered });
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets }),
+      });
+      const d: any = await r.json().catch(() => ({}));
+      res.json({
+        status: true,
+        registered: d.registered || [],
+        not_registered: d.not_registered || d.notRegistered || [],
+      });
+    } catch (err) {
+      console.error("n8n validate error:", err);
+      res.status(500).json({ status: false, msg: "Gagal memvalidasi nomor via n8n" });
+    }
   });
 
   // Mulai blast: kirim seluruh daftar ke n8n workflow (n8n yang loop + Wait per pesan)

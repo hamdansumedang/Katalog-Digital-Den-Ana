@@ -1,0 +1,53 @@
+{
+  "name": "WA Check Exists (WAHA) - Den Ana",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wa-check",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-check",
+      "name": "Webhook Check",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "wa-check"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Cek tiap nomor ke WAHA check-exists, balas {registered, not_registered}.\n// Sinkron: hasil dikembalikan via Respond to Webhook.\n\nconst body = ($input.first().json.body) || $input.first().json;\nconst targets = Array.isArray(body.targets) ? body.targets : [];\n\nconst base = ($env.N8N_WAHA_BASE_URL || 'http://waha:3000').replace(/\\/+$/, '');\nconst apiKey = $env.N8N_WAHA_API_KEY || '';\nconst session = $env.N8N_WAHA_SESSION || 'default';\n\nconst registered = [];\nconst not_registered = [];\n\nfor (const num of targets) {\n  try {\n    const res = await this.helpers.httpRequest({\n      method: 'GET',\n      url: base + '/api/contacts/check-exists',\n      headers: { 'X-Api-Key': apiKey },\n      qs: { phone: String(num), session },\n      json: true,\n    });\n    if (res && res.numberExists) registered.push(num);\n    else not_registered.push(num);\n  } catch (e) {\n    // gagal cek -> biarkan unknown (tidak masuk kedua list)\n  }\n}\n\nreturn [{ json: { status: true, registered, not_registered } }];"
+      },
+      "id": "check-loop",
+      "name": "Check Loop (WAHA)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond-check",
+      "name": "Respond Hasil",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [480, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Check": {
+      "main": [[{ "node": "Check Loop (WAHA)", "type": "main", "index": 0 }]]
+    },
+    "Check Loop (WAHA)": {
+      "main": [[{ "node": "Respond Hasil", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
