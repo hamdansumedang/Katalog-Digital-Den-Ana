@@ -84,10 +84,26 @@ Endpoint server (app):
 
 ### Setup workflow n8n
 
-Import dua workflow lalu **Activate** keduanya (path produksi baru hidup setelah aktif):
+Dua workflow yang perlu di-import lalu **di-Activate** (path produksi baru hidup setelah aktif):
 
 1. [`n8n/whatsapp-blast-waha.json`](n8n/whatsapp-blast-waha.json) → webhook `wa-blast`
 2. [`n8n/wa-check-exists.json`](n8n/wa-check-exists.json) → webhook `wa-check`
+
+**Cara cepat (otomatis):** jalankan importer dari mesin yang bisa mengakses n8n
+(mis. VPS). Skrip ini meng-create + meng-activate kedua workflow via REST API:
+
+```bash
+N8N_URL="https://n8n.asy-syifaa.com" \
+N8N_API_KEY="<api-key-n8n>" \
+npm run n8n:import
+```
+
+API key dibuat di n8n: **Settings → n8n API → Create an API key**. Skrip akan
+mendeteksi workflow bernama sama (update, bukan duplikat) dan mencetak URL webhook
+hasilnya. Skrip TIDAK menyetel env WAHA — pastikan env n8n di bawah sudah ada.
+
+**Cara manual:** Workflows → menu (…) → **Import from File** → pilih kedua file →
+aktifkan toggle "Active".
 
 Untuk instance `n8n.asy-syifaa.com`, URL produksinya:
 
