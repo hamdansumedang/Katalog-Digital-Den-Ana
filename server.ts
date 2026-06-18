@@ -40,6 +40,75 @@ async function startServer() {
     }
   });
 
+  // Cek nomor WhatsApp aktif (Fonnte validate)
+  app.post("/api/wa/validate", async (req, res) => {
+    const { targets } = req.body as { targets?: string[] };
+    const token = process.env.FONNTE_TOKEN || "sRzKLWyBBpBHbTkd2TVV";
+
+    if (!Array.isArray(targets) || targets.length === 0) {
+      return res.status(400).json({ status: false, msg: "targets harus berupa array nomor" });
+    }
+
+    try {
+      const response = await fetch("https://api.fonnte.com/validate", {
+        method: "POST",
+        headers: {
+          "Authorization": token,
+        },
+        body: new URLSearchParams({
+          target: targets.join(","),
+          countryCode: "62",
+        }),
+      });
+      const data = await response.json();
+      res.json(data);
+    } catch (error) {
+      console.error("Fonnte validate error:", error);
+      res.status(500).json({ status: false, msg: "Gagal memvalidasi nomor WhatsApp" });
+    }
+  });
+
+  // Kirim satu pesan via n8n workflow
+  app.post("/api/wa/send", async (req, res) => {
+    const { target, message, name, webhookUrl } = req.body as {
+      target?: string;
+      message?: string;
+      name?: string;
+      webhookUrl?: string;
+    };
+
+    const url = webhookUrl || process.env.N8N_WEBHOOK_URL;
+
+    if (!url) {
+      return res.status(400).json({
+        status: false,
+        msg: "N8N_WEBHOOK_URL belum dikonfigurasi. Set di .env atau kirim webhookUrl dari aplikasi.",
+      });
+    }
+    if (!target || !message) {
+      return res.status(400).json({ status: false, msg: "target & message wajib diisi" });
+    }
+
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, message, name: name || "" }),
+      });
+      const text = await response.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { raw: text };
+      }
+      res.status(response.ok ? 200 : 502).json({ status: response.ok, ...data });
+    } catch (error) {
+      console.error("n8n send error:", error);
+      res.status(500).json({ status: false, msg: "Gagal mengirim ke n8n workflow" });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

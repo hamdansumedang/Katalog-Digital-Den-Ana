@@ -30,3 +30,21 @@ export interface Order {
   total: number;
   createdAt: string;
 }
+
+export type WaStatus = 'unknown' | 'active' | 'inactive';
+export type SendStatus = 'idle' | 'sending' | 'sent' | 'failed';
+
+export interface BlastContact {
+  name: string;
+  number: string; // normalisasi 62xxxxxxxxxx
+  raw: string;
+  waStatus: WaStatus;
+  sendStatus: SendStatus;
+  sendDetail?: string;
+}
+
+export interface ContactGroup {
+  name: string;
+  contacts: BlastContact[];
+  updatedAt: string;
+}
