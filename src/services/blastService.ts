@@ -140,15 +140,23 @@ export const checkWhatsApp = async (
   return result;
 };
 
+export interface StartBlastResult {
+  ok: boolean;
+  jobId?: string;
+  total?: number;
+  callbackEnabled?: boolean;
+  msg?: string;
+}
+
 /**
- * Kirim satu pesan melalui n8n workflow (via proxy server).
+ * Mulai blast: kirim seluruh daftar penerima ke n8n workflow (via proxy server).
+ * n8n yang melakukan loop + Wait per pesan; status dipantau via getJobStatus().
  */
-export const sendOne = async (params: {
-  target: string;
-  message: string;
-  name?: string;
+export const startBlast = async (params: {
+  contacts: { target: string; message: string; name?: string }[];
+  intervalSeconds: number;
   webhookUrl?: string;
-}): Promise<{ ok: boolean; detail?: any }> => {
+}): Promise<StartBlastResult> => {
   try {
     const response = await fetch('/api/wa/send', {
       method: 'POST',
@@ -156,10 +164,43 @@ export const sendOne = async (params: {
       body: JSON.stringify(params),
     });
     const data = await response.json().catch(() => ({}));
-    return { ok: response.ok && data.status !== false, detail: data };
+    return {
+      ok: response.ok && data.status !== false,
+      jobId: data.jobId,
+      total: data.total,
+      callbackEnabled: data.callbackEnabled,
+      msg: data.msg,
+    };
   } catch (err) {
-    console.error('sendOne error:', err);
-    return { ok: false, detail: String(err) };
+    console.error('startBlast error:', err);
+    return { ok: false, msg: String(err) };
+  }
+};
+
+export interface JobStatus {
+  ok: boolean;
+  done: boolean;
+  total: number;
+  completed: number;
+  results: Record<string, { status: 'sent' | 'failed'; detail?: string }>;
+}
+
+/** Ambil status job blast (hasil per nomor) dari server. */
+export const getJobStatus = async (jobId: string): Promise<JobStatus | null> => {
+  try {
+    const response = await fetch(`/api/wa/status?jobId=${encodeURIComponent(jobId)}`);
+    if (!response.ok) return null;
+    const data = await response.json();
+    return {
+      ok: true,
+      done: !!data.done,
+      total: data.total || 0,
+      completed: data.completed || 0,
+      results: data.results || {},
+    };
+  } catch (err) {
+    console.error('getJobStatus error:', err);
+    return null;
   }
 };
 

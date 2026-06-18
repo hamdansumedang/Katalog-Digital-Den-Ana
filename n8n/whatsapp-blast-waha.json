@@ -1,0 +1,161 @@
+{
+  "name": "WhatsApp Blast (WAHA) - Den Ana",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-blast",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Blast",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "whatsapp-blast"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"accepted\", \"jobId\": $json.body.jobId, \"count\": ($json.body.contacts || []).length } }}",
+        "options": {}
+      },
+      "id": "respond-accepted",
+      "name": "Respond Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pecah daftar kontak menjadi item individual, bawa konteks job di tiap item.\nconst body = $input.first().json.body || $input.first().json;\nconst jobId = body.jobId;\nconst callbackUrl = body.callbackUrl;\nconst intervalSeconds = Number(body.intervalSeconds) > 0 ? Number(body.intervalSeconds) : 7;\nconst contacts = Array.isArray(body.contacts) ? body.contacts : [];\nreturn contacts.map((c) => ({\n  json: {\n    jobId,\n    callbackUrl,\n    intervalSeconds,\n    target: c.target,\n    name: c.name || '',\n    message: c.message,\n  },\n}));"
+      },
+      "id": "explode-contacts",
+      "name": "Explode Contacts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "loop-contacts",
+      "name": "Loop Per Pesan",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WAHA_URL }}/api/sendText",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Api-Key",
+              "value": "={{ $env.WAHA_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"session\": ($env.WAHA_SESSION || \"default\"), \"chatId\": $json.target + \"@c.us\", \"text\": $json.message } }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "waha-send",
+      "name": "WAHA sendText",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [880, 200],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Tentukan sukses/gagal dari respons WAHA & susun payload callback.\nconst item = $input.first().json;\nconst ctx = $('Loop Per Pesan').item.json;\nconst statusCode = item.statusCode || (item.error ? 0 : 200);\nconst ok = statusCode >= 200 && statusCode < 300;\nlet detail = '';\nif (!ok) {\n  detail = typeof item.body === 'object' ? JSON.stringify(item.body) : String(item.body || item.error || statusCode);\n}\nreturn [{\n  json: {\n    jobId: ctx.jobId,\n    callbackUrl: ctx.callbackUrl,\n    intervalSeconds: ctx.intervalSeconds,\n    target: ctx.target,\n    status: ok ? 'sent' : 'failed',\n    detail: detail.slice(0, 200),\n  },\n}];"
+      },
+      "id": "build-result",
+      "name": "Build Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callbackUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"jobId\": $json.jobId, \"target\": $json.target, \"status\": $json.status, \"detail\": $json.detail } }}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "callback-app",
+      "name": "Callback ke App",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 200],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "amount": "={{ $('Loop Per Pesan').item.json.intervalSeconds }}",
+        "unit": "seconds"
+      },
+      "id": "wait-interval",
+      "name": "Wait Interval",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1540, 200]
+    }
+  ],
+  "connections": {
+    "Webhook Blast": {
+      "main": [[{ "node": "Respond Accepted", "type": "main", "index": 0 }]]
+    },
+    "Respond Accepted": {
+      "main": [[{ "node": "Explode Contacts", "type": "main", "index": 0 }]]
+    },
+    "Explode Contacts": {
+      "main": [[{ "node": "Loop Per Pesan", "type": "main", "index": 0 }]]
+    },
+    "Loop Per Pesan": {
+      "main": [
+        [],
+        [{ "node": "WAHA sendText", "type": "main", "index": 0 }]
+      ]
+    },
+    "WAHA sendText": {
+      "main": [[{ "node": "Build Result", "type": "main", "index": 0 }]]
+    },
+    "Build Result": {
+      "main": [[{ "node": "Callback ke App", "type": "main", "index": 0 }]]
+    },
+    "Callback ke App": {
+      "main": [[{ "node": "Wait Interval", "type": "main", "index": 0 }]]
+    },
+    "Wait Interval": {
+      "main": [[{ "node": "Loop Per Pesan", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

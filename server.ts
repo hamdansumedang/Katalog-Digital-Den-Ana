@@ -9,6 +9,31 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// ---- Konfigurasi WAHA + n8n ----
+const WAHA_URL = (process.env.WAHA_URL || "").replace(/\/+$/, "");
+const WAHA_API_KEY = process.env.WAHA_API_KEY || "";
+const WAHA_SESSION = process.env.WAHA_SESSION || "default";
+const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || "";
+const APP_URL = (process.env.APP_URL || "").replace(/\/+$/, "");
+
+// ---- Penyimpanan job blast (in-memory) ----
+type BlastResult = { status: "sent" | "failed"; detail?: string };
+type BlastJob = {
+  total: number;
+  results: Record<string, BlastResult>;
+  done: boolean;
+  createdAt: number;
+};
+const blastJobs = new Map<string, BlastJob>();
+
+// Bersihkan job lama (> 2 jam) tiap 30 menit
+setInterval(() => {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, job] of blastJobs) {
+    if (job.createdAt < cutoff) blastJobs.delete(id);
+  }
+}, 30 * 60 * 1000).unref?.();
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -40,44 +65,59 @@ async function startServer() {
     }
   });
 
-  // Cek nomor WhatsApp aktif (Fonnte validate)
+  // Cek nomor WhatsApp aktif via WAHA (GET /api/contacts/check-exists)
   app.post("/api/wa/validate", async (req, res) => {
     const { targets } = req.body as { targets?: string[] };
-    const token = process.env.FONNTE_TOKEN || "sRzKLWyBBpBHbTkd2TVV";
 
     if (!Array.isArray(targets) || targets.length === 0) {
       return res.status(400).json({ status: false, msg: "targets harus berupa array nomor" });
     }
-
-    try {
-      const response = await fetch("https://api.fonnte.com/validate", {
-        method: "POST",
-        headers: {
-          "Authorization": token,
-        },
-        body: new URLSearchParams({
-          target: targets.join(","),
-          countryCode: "62",
-        }),
+    if (!WAHA_URL) {
+      return res.status(400).json({
+        status: false,
+        msg: "WAHA_URL belum dikonfigurasi di server (.env).",
       });
-      const data = await response.json();
-      res.json(data);
-    } catch (error) {
-      console.error("Fonnte validate error:", error);
-      res.status(500).json({ status: false, msg: "Gagal memvalidasi nomor WhatsApp" });
     }
+
+    const registered: string[] = [];
+    const not_registered: string[] = [];
+    const queue = [...targets];
+
+    const worker = async () => {
+      while (queue.length) {
+        const num = queue.shift();
+        if (!num) continue;
+        try {
+          const url =
+            `${WAHA_URL}/api/contacts/check-exists` +
+            `?phone=${encodeURIComponent(num)}&session=${encodeURIComponent(WAHA_SESSION)}`;
+          const r = await fetch(url, { headers: { "X-Api-Key": WAHA_API_KEY } });
+          const d: any = await r.json().catch(() => ({}));
+          if (d && d.numberExists) registered.push(num);
+          else not_registered.push(num);
+        } catch (err) {
+          console.error("WAHA check-exists error:", num, err);
+          // biarkan nomor tetap "unknown" (tidak dimasukkan ke kedua list)
+        }
+      }
+    };
+
+    // Jalankan beberapa worker paralel agar lebih cepat
+    const concurrency = Math.min(5, targets.length);
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+    res.json({ status: true, registered, not_registered });
   });
 
-  // Kirim satu pesan via n8n workflow
+  // Mulai blast: kirim seluruh daftar ke n8n workflow (n8n yang loop + Wait per pesan)
   app.post("/api/wa/send", async (req, res) => {
-    const { target, message, name, webhookUrl } = req.body as {
-      target?: string;
-      message?: string;
-      name?: string;
+    const { contacts, intervalSeconds, webhookUrl } = req.body as {
+      contacts?: { target: string; message: string; name?: string }[];
+      intervalSeconds?: number;
       webhookUrl?: string;
     };
 
-    const url = webhookUrl || process.env.N8N_WEBHOOK_URL;
+    const url = webhookUrl || N8N_WEBHOOK_URL;
 
     if (!url) {
       return res.status(400).json({
@@ -85,28 +125,81 @@ async function startServer() {
         msg: "N8N_WEBHOOK_URL belum dikonfigurasi. Set di .env atau kirim webhookUrl dari aplikasi.",
       });
     }
-    if (!target || !message) {
-      return res.status(400).json({ status: false, msg: "target & message wajib diisi" });
+    if (!Array.isArray(contacts) || contacts.length === 0) {
+      return res.status(400).json({ status: false, msg: "contacts wajib berisi minimal 1 penerima" });
     }
+
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    blastJobs.set(jobId, {
+      total: contacts.length,
+      results: {},
+      done: false,
+      createdAt: Date.now(),
+    });
+
+    const callbackUrl = APP_URL ? `${APP_URL}/api/wa/result` : "";
 
     try {
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target, message, name: name || "" }),
+        body: JSON.stringify({
+          jobId,
+          callbackUrl,
+          intervalSeconds: intervalSeconds && intervalSeconds > 0 ? intervalSeconds : 7,
+          contacts,
+        }),
       });
-      const text = await response.text();
-      let data: any;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = { raw: text };
-      }
-      res.status(response.ok ? 200 : 502).json({ status: response.ok, ...data });
+      // n8n biasanya membalas segera (Respond to Webhook). Workflow lanjut di background.
+      res.status(response.ok ? 200 : 502).json({
+        status: response.ok,
+        jobId,
+        total: contacts.length,
+        callbackEnabled: !!callbackUrl,
+      });
     } catch (error) {
-      console.error("n8n send error:", error);
-      res.status(500).json({ status: false, msg: "Gagal mengirim ke n8n workflow" });
+      console.error("n8n trigger error:", error);
+      blastJobs.delete(jobId);
+      res.status(500).json({ status: false, msg: "Gagal memicu n8n workflow" });
     }
+  });
+
+  // Callback dari n8n: laporan hasil kirim per nomor
+  app.post("/api/wa/result", (req, res) => {
+    const { jobId, target, status, detail } = req.body as {
+      jobId?: string;
+      target?: string;
+      status?: boolean | string;
+      detail?: any;
+    };
+
+    const job = jobId ? blastJobs.get(jobId) : undefined;
+    if (job && target) {
+      const ok = status === true || status === "success" || status === "sent" || status === "ok";
+      job.results[target] = {
+        status: ok ? "sent" : "failed",
+        detail: detail ? String(detail).slice(0, 200) : undefined,
+      };
+      if (Object.keys(job.results).length >= job.total) job.done = true;
+    }
+    res.json({ ok: true });
+  });
+
+  // Polling status job blast dari aplikasi
+  app.get("/api/wa/status", (req, res) => {
+    const jobId = String(req.query.jobId || "");
+    const job = blastJobs.get(jobId);
+    if (!job) {
+      return res.status(404).json({ status: false, msg: "job tidak ditemukan" });
+    }
+    res.json({
+      status: true,
+      jobId,
+      total: job.total,
+      done: job.done,
+      completed: Object.keys(job.results).length,
+      results: job.results,
+    });
   });
 
   // Vite middleware for development

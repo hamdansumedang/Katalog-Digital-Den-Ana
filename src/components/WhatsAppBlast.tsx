@@ -22,7 +22,8 @@ import {
   parseContacts,
   importFromDevice,
   checkWhatsApp,
-  sendOne,
+  startBlast,
+  getJobStatus,
   renderMessage,
   loadGroups,
   saveGroup,
@@ -175,52 +176,83 @@ export default function WhatsAppBlast() {
 
     cancelRef.current = false;
     setIsSending(true);
-    setContacts(prev => prev.map(c => ({ ...c, sendStatus: 'idle', sendDetail: undefined })));
 
     const targets = [...recipients];
+    const targetSet = new Set(targets.map(c => c.number));
+    setContacts(prev =>
+      prev.map(c =>
+        targetSet.has(c.number)
+          ? { ...c, sendStatus: 'sending', sendDetail: undefined }
+          : c,
+      ),
+    );
     setProgress({ current: 0, total: targets.length, eta: targets.length * interval });
 
-    for (let i = 0; i < targets.length; i++) {
+    // Pesan dirender per kontak di sini; n8n hanya meneruskan teks ke WAHA.
+    const payload = targets.map(c => ({
+      target: c.number,
+      message: renderMessage(message, c),
+      name: c.name,
+    }));
+
+    const start = await startBlast({
+      contacts: payload,
+      intervalSeconds: interval,
+      webhookUrl: trimmedWebhook || undefined,
+    });
+
+    if (!start.ok || !start.jobId) {
+      setIsSending(false);
+      setContacts(prev =>
+        prev.map(c => (targetSet.has(c.number) ? { ...c, sendStatus: 'idle' } : c)),
+      );
+      showToast('err', start.msg || 'Gagal memicu n8n workflow.');
+      return;
+    }
+
+    showToast('ok', `Daftar dikirim ke n8n (${targets.length} penerima). n8n memproses…`);
+
+    // Tanpa callback (APP_URL belum diset), status realtime tidak akan masuk.
+    if (!start.callbackEnabled) {
+      setIsSending(false);
+      showToast(
+        'err',
+        'APP_URL belum diset: n8n tetap memproses, tapi status berhasil/gagal tidak tampil di sini.',
+      );
+      return;
+    }
+
+    // Pantau hasil via polling sampai selesai (atau timeout).
+    const jobId = start.jobId;
+    const deadline = Date.now() + (targets.length * interval + 90) * 1000;
+
+    while (!cancelRef.current && Date.now() < deadline) {
+      await sleep(2500);
       if (cancelRef.current) break;
-      const contact = targets[i];
+
+      const status = await getJobStatus(jobId);
+      if (!status) continue;
 
       setContacts(prev =>
-        prev.map(c => (c.number === contact.number ? { ...c, sendStatus: 'sending' } : c)),
+        prev.map(c => {
+          const r = status.results[c.number];
+          if (r && targetSet.has(c.number)) {
+            return { ...c, sendStatus: r.status, sendDetail: r.detail };
+          }
+          return c;
+        }),
       );
-
-      const res = await sendOne({
-        target: contact.number,
-        message: renderMessage(message, contact),
-        name: contact.name,
-        webhookUrl: trimmedWebhook || undefined,
-      });
-
-      setContacts(prev =>
-        prev.map(c =>
-          c.number === contact.number
-            ? {
-                ...c,
-                sendStatus: res.ok ? 'sent' : 'failed',
-                sendDetail: res.ok ? undefined : JSON.stringify(res.detail).slice(0, 140),
-              }
-            : c,
-        ),
-      );
-
       setProgress({
-        current: i + 1,
-        total: targets.length,
-        eta: (targets.length - (i + 1)) * interval,
+        current: status.completed,
+        total: status.total || targets.length,
+        eta: Math.max(0, (targets.length - status.completed) * interval),
       });
 
-      // Interval antar pesan (lewati delay untuk pesan terakhir)
-      if (i < targets.length - 1 && !cancelRef.current) {
-        await sleep(interval * 1000);
-      }
+      if (status.done) break;
     }
 
     setIsSending(false);
-    if (cancelRef.current) showToast('err', 'Pengiriman dihentikan.');
+    if (cancelRef.current) showToast('err', 'Pemantauan dihentikan (n8n mungkin masih berjalan).');
     else showToast('ok', 'Pengiriman selesai.');
   };
 
@@ -431,7 +463,7 @@ export default function WhatsAppBlast() {
           <div className="flex items-center gap-4 mt-4">
             <div className="flex-1">
               <label className="block text-xs font-bold text-gray-500 uppercase mb-1">
-                Interval (detik)
+                Interval n8n (detik)
               </label>
               <input
                 type="number"
@@ -494,7 +526,7 @@ export default function WhatsAppBlast() {
               className="mt-4 w-full py-4 rounded-xl bg-brand-red text-white font-bold flex items-center justify-center gap-2 active:scale-95 transition-transform"
             >
               <StopCircle className="h-5 w-5" />
-              Hentikan Pengiriman
+              Hentikan Pemantauan
             </button>
           ) : (
             <button
