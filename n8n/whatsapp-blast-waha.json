@@ -1,0 +1,53 @@
+{
+  "name": "WhatsApp Blast (WAHA) - Den Ana",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wa-blast",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-blast",
+      "name": "Webhook Blast",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "wa-blast"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"accepted\", \"jobId\": $json.body.jobId, \"count\": ($json.body.contacts || []).length } }}",
+        "options": {}
+      },
+      "id": "respond-accepted",
+      "name": "Respond Accepted",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Kirim seluruh daftar ke WAHA dengan interval + lapor balik tiap nomor ke app.\n// CATATAN PENTING (sesuai backup ASF):\n//  - Webhook v2 membungkus body POST di item.json.body\n//  - Di Code node WAJIB pakai this.helpers.httpRequest (fetch TIDAK ada)\n//  - $env butuh N8N_BLOCK_ENV_ACCESS_IN_NODE=false\n\nconst body = ($input.first().json.body) || $input.first().json;\nconst jobId = body.jobId;\nconst callbackUrl = body.callbackUrl;\nconst intervalMs = (Number(body.intervalSeconds) > 0 ? Number(body.intervalSeconds) : 7) * 1000;\nconst contacts = Array.isArray(body.contacts) ? body.contacts : [];\n\nconst base = ($env.N8N_WAHA_BASE_URL || 'http://waha:3000').replace(/\\/+$/, '');\nconst apiKey = $env.N8N_WAHA_API_KEY || '';\nconst session = $env.N8N_WAHA_SESSION || 'default';\n\nconst results = [];\n\nfor (let i = 0; i < contacts.length; i++) {\n  const c = contacts[i];\n  let status = 'sent';\n  let detail = '';\n\n  try {\n    await this.helpers.httpRequest({\n      method: 'POST',\n      url: base + '/api/sendText',\n      headers: { 'X-Api-Key': apiKey, 'Content-Type': 'application/json' },\n      body: { session, chatId: String(c.target) + '@c.us', text: c.message },\n      json: true,\n    });\n  } catch (e) {\n    status = 'failed';\n    detail = String((e && e.message) ? e.message : e).slice(0, 200);\n  }\n\n  // Callback hasil per nomor ke aplikasi (status realtime di /blast)\n  if (callbackUrl) {\n    try {\n      await this.helpers.httpRequest({\n        method: 'POST',\n        url: callbackUrl,\n        headers: { 'Content-Type': 'application/json' },\n        body: { jobId, target: c.target, status, detail },\n        json: true,\n      });\n    } catch (e) { /* abaikan kegagalan callback, lanjut */ }\n  }\n\n  results.push({ target: c.target, status, detail });\n\n  // Interval antar pesan (lewati delay untuk pesan terakhir)\n  if (i < contacts.length - 1) {\n    await new Promise((r) => setTimeout(r, intervalMs));\n  }\n}\n\nreturn [{ json: { jobId, total: contacts.length, results } }];"
+      },
+      "id": "send-loop",
+      "name": "Send Loop (WAHA)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Blast": {
+      "main": [[{ "node": "Respond Accepted", "type": "main", "index": 0 }]]
+    },
+    "Respond Accepted": {
+      "main": [[{ "node": "Send Loop (WAHA)", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

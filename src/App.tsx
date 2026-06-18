@@ -183,6 +183,12 @@ export default function App() {
       <footer className="bg-brand-blue p-4 pb-8 text-center mt-8">
         <p className="text-white font-extrabold text-xs tracking-[0.2em] uppercase">PT ROJO BRONTO LANO</p>
         <p className="text-blue-200 text-[10px] mt-1 opacity-70">Sumedang, Jawa Barat</p>
+        <a
+          href="/blast"
+          className="inline-block mt-3 text-blue-200 text-[10px] uppercase tracking-widest font-bold hover:text-white transition-colors"
+        >
+          Blast WhatsApp →
+        </a>
       </footer>
 
       <ProductDetail 
